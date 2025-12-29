@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>勞工體格管理趨勢圖</title>
+    <script src="https://cdn.jsdelivr.net/npm/fhirclient@2/build/fhir-client.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 40px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+        canvas { max-width: 800px; margin: 20px auto; display: block; }
+    </style>
+</head>
+<body>
+    <h1>勞工體格檢查結果（員工 ID: <span id="patientId"></span>）</h1>
+    <table id="summaryTable">
+        <thead><tr><th>日期</th><th>BMI</th><th>BMI分類</th><th>腹圍(cm)</th><th>腹圍異常</th><th>收縮壓</th><th>舒張壓</th><th>血壓分級</th><th>空腹血糖</th><th>總膽固醇</th></tr></thead>
+        <tbody></tbody>
+    </table>
+
+    <h2>趨勢圖</h2>
+    <canvas id="bmiChart"></canvas>
+    <canvas id="bpChart"></canvas>
+    <canvas id="glucoseChart"></canvas>
+    <canvas id="cholesterolChart"></canvas>
+    <canvas id="waistChart"></canvas>
+
+    <script>
+        FHIR.oauth2.ready()
+            .then(client => {
+                const patient = client.patient;
+                document.getElementById('patientId').textContent = patient.id;
+
+                // 查詢所有相關 Observation
+                return client.request(`Observation?patient=${patient.id}&code=39156-5,8302-2,29463-7,8280-4,85354-9,1558-6,2093-3`);
+            })
+            .then(bundle => {
+                const entries = bundle.entry || [];
+                const dataPoints = [];
+
+                entries.forEach(entry => {
+                    const obs = entry.resource;
+                    const date = obs.effectiveDateTime || obs.issued || '未知';
+                    let row = { date: date.slice(0,10) };
+
+                    if (obs.code.coding[0].code === '85354-9') { // BP panel
+                        obs.component.forEach(c => {
+                            if (c.code.coding[0].code === '8480-6') row.sbp = c.valueQuantity.value;
+                            if (c.code.coding[0].code === '8462-4') row.dbp = c.valueQuantity.value;
+                        });
+                    } else if (obs.valueQuantity) {
+                        const code = obs.code.coding[0].code;
+                        row[code] = obs.valueQuantity.value;
+                    }
+                    if (Object.keys(row).length > 1) dataPoints.push(row);
+                });
+
+                // 排序日期
+                dataPoints.sort((a,b) => a.date.localeCompare(b.date));
+
+                // 填表格
+                const tbody = document.querySelector('#summaryTable tbody');
+                dataPoints.forEach(p => {
+                    const bmi = p['39156-5'] || ((p['29463-7'] / ((p['8302-2']/100)**2)).toFixed(1));
+                    const bmiClass = bmi < 18.5 ? '過輕' : bmi < 24 ? '正常' : bmi < 27 ? '過重' : '肥胖';
+                    const waistAbnormal = (patient.gender === 'male' && p['8280-4'] >= 90) || (patient.gender === 'female' && p['8280-4'] >= 80) ? '是' : '否';
+                    const bpClass = (!p.sbp || !p.dbp) ? '' :
+                        p.sbp < 120 && p.dbp < 80 ? '正常' :
+                        p.sbp <= 129 && p.dbp < 80 ? '血壓升高' :
+                        p.sbp <= 139 || p.dbp <= 89 ? '第1期高血壓' : '第2期高血壓';
+
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${p.date}</td><td>${bmi}</td><td>${bmiClass}</td><td>${p['8280-4']||''}</td><td>${waistAbnormal}</td>
+                                    <td>${p.sbp||''}</td><td>${p.dbp||''}</td><td>${bpClass}</td><td>${p['1558-6']||''}</td><td>${p['2093-3']||''}</td>`;
+                    tbody.appendChild(tr);
+                });
+
+                // 繪製5種趨勢圖 (折線圖)
+                const labels = dataPoints.map(d => d.date);
+                const createChart = (id, label, key, color) => {
+                    new Chart(document.getElementById(id), {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{ label: label, data: dataPoints.map(d => d[key] || null), borderColor: color, fill: false }]
+                        },
+                        options: { responsive: true, scales: { y: { beginAtZero: false } } }
+                    });
+                };
+
+                createChart('bmiChart', 'BMI 趨勢', '39156-5', 'rgb(255, 99, 132)');
+                createChart('waistChart', '腹圍 趨勢 (cm)', '8280-4', 'rgb(54, 162, 235)');
+                createChart('glucoseChart', '空腹血糖 趨勢 (mg/dL)', '1558-6', 'rgb(255, 205, 86)');
+                createChart('cholesterolChart', '總膽固醇 趨勢 (mg/dL)', '2093-3', 'rgb(75, 192, 192)');
+
+                // 血壓雙線圖
+                new Chart(document.getElementById('bpChart'), {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            { label: '收縮壓', data: dataPoints.map(d => d.sbp || null), borderColor: 'rgb(255, 99, 132)' },
+                            { label: '舒張壓', data: dataPoints.map(d => d.dbp || null), borderColor: 'rgb(54, 162, 235)' }
+                        ]
+                    },
+                    options: { responsive: true }
+                });
+            })
+            .catch(console.error);
+    </script>
+</body>
+</html>
